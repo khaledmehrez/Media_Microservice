@@ -1,0 +1,191 @@
+stages:
+    - build-nest
+    - test-nest
+    - build-image
+    - deploy
+
+build-nest:
+    stage: build-nest
+    image: node:lts
+    tags:
+      - local
+    script:
+        - npm install --silent
+        - npm run build
+    artifacts:
+        paths:
+        - node_modules
+        - dist
+
+lint-nest:
+    stage: test-nest
+    image: node:lts
+    tags:
+      - local
+    script:
+      - npm run lint
+    allow_failure: true
+    artifacts:
+        paths:
+        - dist
+        - node_modules
+
+test-e2e-nest:
+    stage: test-nest
+    image: node:lts
+    tags:
+      - local
+    script:
+      - npm run test:e2e
+      - cat coverage-e2e/lcov-report/index.html | grep strong | grep "[0-9][0-9]\.[0-9]*" -o -m 1 | xargs echo coverage percentage
+    allow_failure: true
+    coverage: /coverage percentage \d+.\d+/
+    artifacts:
+      expose_as: "Coverage"
+      paths:
+        - coverage-e2e
+      reports:
+        junit:
+          - junit.xml
+        coverage_report:
+          coverage_format: cobertura
+          path: coverage-e2e/cobertura-coverage.xml
+
+
+build-image:
+  stage: build-image
+  image: docker:dind
+  tags:
+      - local
+  variables:
+    DOCKER_DRIVER: overlay2
+    APP_NAME:  __CI_PROJECT_SLUG__
+    DOCKER_TLS_CERTDIR: ""
+  services:
+    - docker:dind
+  script:
+    - sleep 15s
+    - docker login -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}" "${CI_REGISTRY}"
+    - docker build -t "${CI_REGISTRY_IMAGE}:${CI_PIPELINE_ID}" .
+    - docker push "${CI_REGISTRY_IMAGE}:${CI_PIPELINE_ID}"
+
+deploy-production:
+  stage: deploy
+  image: thorstenhans/helm3
+  tags:
+    - kubernetes
+  when: manual
+  only:
+    - main
+  script:
+    - cd charts/
+    - sed -i "s~__CI_REGISTRY_IMAGE__~${CI_REGISTRY_IMAGE}~" values.yaml
+    - sed -i "s~__VERSION__~${CI_PIPELINE_ID}~" values.yaml
+    - sed -i "s~__GITLAB_USERNAME__~${GITLAB_USERNAME}~" values.yaml
+    - sed -i "s~__GITLAB_SECRETKEY__~${GITLAB_SECRETKEY}~" values.yaml
+    - sed -i "s~__CI_PROJECT_PATH_SLUG__~${CI_PROJECT_PATH_SLUG}~" values.yaml
+    - sed -i "s~__CI_PROJECT_PATH_SLUG__~${CI_PROJECT_PATH_SLUG}~" Chart.yaml
+    - sed -i "s~__CI_ENVIRONMENT_SLUG__~$(echo ${CI_ENVIRONMENT_SLUG} | tr "/" "-" | tr '[:upper:]' '[:lower:]')~" values.yaml
+    - sed -i "s~__CI_PROJECT_SLUG__~$KUBE_NAMESPACE~" values.yaml
+    - sed -i "s~__CI_PROJECT_NAME__~$(echo $CI_PROJECT_NAME)~" values.yaml
+    - sed -i "s~__HOST__~$(echo ${CI_ENVIRONMENT_URL:8})~" values.yaml
+    - sed -i "s~__DD_ENV__~$(echo prod)~" values.yaml
+    - sed -i "s~__DD_SERVICE__~$(echo media-ms)~" values.yaml
+    - sed -i "s~__DD_VERSION__~$(echo v0.1.0)~" values.yaml
+    - (echo "$MS_ENV_VARS_PROD") >> values.yaml
+    - cat values.yaml
+    - kubectl version
+    - kubectl delete -n $KUBE_NAMESPACE secret registry-gitlab-key --ignore-not-found || true
+    - kubectl create -n $KUBE_NAMESPACE secret docker-registry registry-gitlab-key --docker-server=registry.gitlab.com --docker-username=${CI_REGISTRY_USER}  --docker-password=${CI_REGISTRY_PASSWORD} || true    - kubectl patch -n $KUBE_NAMESPACE serviceaccount default -p "{\"imagePullSecrets\":[{\"name\":\"registry-gitlab-key\"}]}" || true
+    - helm upgrade $KUBE_NAMESPACE ./ --install --values=./values.yaml -n $KUBE_NAMESPACE
+  environment:
+    name: production
+    url: https://media-ms.lovester.tech
+
+deploy-development:
+  stage: deploy
+  image: thorstenhans/helm3
+  tags:
+      - kubernetes
+  only:
+    - development
+  script:
+    - cd charts/
+    - sed -i "s~__CI_REGISTRY_IMAGE__~${CI_REGISTRY_IMAGE}~" values.yaml
+    - sed -i "s~__VERSION__~${CI_PIPELINE_ID}~" values.yaml
+    - sed -i "s~__GITLAB_USERNAME__~${GITLAB_USERNAME}~" values.yaml
+    - sed -i "s~__GITLAB_SECRETKEY__~${GITLAB_SECRETKEY}~" values.yaml
+    - sed -i "s~__CI_PROJECT_PATH_SLUG__~${CI_PROJECT_PATH_SLUG}~" values.yaml
+    - sed -i "s~__CI_PROJECT_PATH_SLUG__~${CI_PROJECT_PATH_SLUG}~" Chart.yaml
+    - sed -i "s~__CI_ENVIRONMENT_SLUG__~$(echo ${CI_ENVIRONMENT_SLUG} | tr "/" "-" | tr '[:upper:]' '[:lower:]')~" values.yaml
+    - sed -i "s~__CI_PROJECT_SLUG__~$KUBE_NAMESPACE~" values.yaml
+    - sed -i "s~__CI_PROJECT_NAME__~$(echo $CI_PROJECT_NAME)~" values.yaml
+    - sed -i "s~__KUBE_NAMESPACE__~$(echo $KUBE_NAMESPACE)~" values.yaml
+    - sed -i "s~__KUBE_NAMESPACE__~$(echo $KUBE_NAMESPACE)~" Chart.yaml
+    - sed -i "s~__HOST__~$(echo ${CI_ENVIRONMENT_URL:8})~" values.yaml
+    - sed -i "s~__DD_ENV__~$(echo dev)~" values.yaml
+    - sed -i "s~__DD_SERVICE__~$(echo media-ms)~" values.yaml
+    - sed -i "s~__DD_VERSION__~$(echo v0.1.0)~" values.yaml
+    - (echo "$MS_ENV_VARS_DEV") >> values.yaml
+    - cat values.yaml
+    - kubectl version
+    - kubectl delete -n $KUBE_NAMESPACE secret registry-gitlab-key --ignore-not-found || true
+    - kubectl create -n $KUBE_NAMESPACE secret docker-registry registry-gitlab-key --docker-server=registry.gitlab.com --docker-username=${GITLAB_USERNAME}  --docker-password=${GITLAB_SECRETKEY} || true    - kubectl patch -n $KUBE_NAMESPACE serviceaccount default -p "{\"imagePullSecrets\":[{\"name\":\"registry-gitlab-key\"}]}" || true
+    - helm upgrade $KUBE_NAMESPACE ./ --install --values=./values.yaml -n $KUBE_NAMESPACE
+  environment:
+    name: development-${CI_PROJECT_NAME}
+    url: https://${CI_PROJECT_NAME}.dev.lovester.tech
+
+
+deploy-feature:
+  image: thorstenhans/helm3
+  tags:
+      - kubernetes
+  stage: deploy
+  except:
+    - main
+    - development
+  when: manual
+  script:
+    - cd charts/
+    - sed -i "s~__CI_REGISTRY_IMAGE__~${CI_REGISTRY_IMAGE}~" values.yaml
+    - sed -i "s~__VERSION__~${CI_PIPELINE_ID}~" values.yaml
+    - sed -i "s~__GITLAB_USERNAME__~${GITLAB_USERNAME}~" values.yaml
+    - sed -i "s~__GITLAB_SECRETKEY__~${GITLAB_SECRETKEY}~" values.yaml
+    - sed -i "s~__CI_PROJECT_PATH_SLUG__~${CI_PROJECT_PATH_SLUG}~" values.yaml
+    - sed -i "s~__CI_PROJECT_PATH_SLUG__~${CI_PROJECT_PATH_SLUG}~" Chart.yaml
+    - sed -i "s~__CI_ENVIRONMENT_SLUG__~$(echo ${CI_ENVIRONMENT_SLUG} | tr "/" "-" | tr '[:upper:]' '[:lower:]')~" values.yaml
+    - sed -i "s~__CI_PROJECT_SLUG__~$KUBE_NAMESPACE~" values.yaml
+    - sed -i "s~__CI_PROJECT_NAME__~$(echo $CI_PROJECT_NAME)~" values.yaml
+    - sed -i "s~__KUBE_NAMESPACE__~$(echo $KUBE_NAMESPACE)~" values.yaml
+    - sed -i "s~__KUBE_NAMESPACE__~$(echo $KUBE_NAMESPACE)~" Chart.yaml
+    - sed -i "s~__HOST__~$(echo ${CI_ENVIRONMENT_URL:8})~" values.yaml
+    - sed -i "s~__DD_ENV__~$(echo feature)~" values.yaml
+    - sed -i "s~__DD_SERVICE__~$(echo media-ms)~" values.yaml
+    - sed -i "s~__DD_VERSION__~$(echo v0.1.0)~" values.yaml
+    - (echo "$MS_ENV_VARS_FEATURE") >> values.yaml
+    - cat values.yaml
+    - kubectl version
+    - kubectl delete -n $KUBE_NAMESPACE secret registry-gitlab-key --ignore-not-found || true
+    - kubectl create -n $KUBE_NAMESPACE secret docker-registry registry-gitlab-key --docker-server=registry.gitlab.com --docker-username=${CI_REGISTRY_USER}  --docker-password=${CI_REGISTRY_PASSWORD} || true    - kubectl patch -n $KUBE_NAMESPACE serviceaccount default -p "{\"imagePullSecrets\":[{\"name\":\"registry-gitlab-key\"}]}" || true
+    - helm upgrade $KUBE_NAMESPACE ./ --install --values=./values.yaml -n $KUBE_NAMESPACE
+  environment:
+    name: feature-${CI_MERGE_REQUEST_IID}
+    url: https://${CI_PROJECT_NAME}-${CI_ENVIRONMENT_SLUG}.${KUBE_INGRESS_BASE_DOMAIN}
+    on_stop: stop-feature
+
+
+stop-feature:
+  stage: deploy
+  image: thorstenhans/helm3
+  tags:
+      - kubernetes
+  except:
+    - main
+    - development
+  script:
+    - helm uninstall $KUBE_NAMESPACE -n $KUBE_NAMESPACE
+  environment:
+    name: feature-${CI_MERGE_REQUEST_IID}
+    action: stop
+  when: manual

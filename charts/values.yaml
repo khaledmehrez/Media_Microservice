@@ -1,0 +1,95 @@
+replicaCount: 1
+deployment:
+  labels:
+    - app.kubernetes.io/managed-by=Helm
+    - tags.datadoghq.com/env: __DD_ENV__
+    - tags.datadoghq.com/service: __DD_SERVICE__
+    - tags.datadoghq.com/version: __DD_VERSION__
+
+  annotations:
+    - meta.helm.sh/release-name: __CI_PROJECT_SLUG__
+    - meta.helm.sh/release-namespace: __CI_PROJECT_SLUG__
+    - app.gitlab.com/app: __CI_PROJECT_PATH_SLUG__
+    - app.gitlab.com/env: __CI_ENVIRONMENT_SLUG__
+namespace: __CI_PROJECT_SLUG__
+image:
+  repository: __CI_REGISTRY_IMAGE__
+  pullPolicy: IfNotPresent
+  tag: "__VERSION__"
+  annotations:
+    prometheus.io/scrape: 'true'
+    prometheus.io/port:   '9090'
+    meta.helm.sh/release-name: __CI_PROJECT_SLUG__
+    meta.helm.sh/release-namespace: __CI_PROJECT_SLUG__
+  labels:
+    app.kubernetes.io/managed-by: Helm
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+imageCredentials:
+  name: registry-gitlab-key
+  registry: registry.gitlab.com
+  username: __GITLAB_USERNAME__
+  password: __GITLAB_SECRETKEY__
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: __CI_PROJECT_PATH_SLUG__
+
+podAnnotations:
+  prometheus.io/scrape: 'true'
+  prometheus.io/port:   '9090'
+  meta.helm.sh/release-name: __CI_PROJECT_SLUG__
+  meta.helm.sh/release-namespace: __CI_PROJECT_SLUG__
+  app.gitlab.com/app: __CI_PROJECT_PATH_SLUG__
+  app.gitlab.com/env: __CI_ENVIRONMENT_SLUG__
+
+podLabels:
+  tags.datadoghq.com/env: __DD_ENV__
+  tags.datadoghq.com/service: __DD_SERVICE__
+  tags.datadoghq.com/version: __DD_VERSION__
+
+podSecurityContext: {}
+securityContext: {}
+service:
+  port: 80
+  targetPort: 3000
+
+ingress:
+  enabled: true
+  className: "kong"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: __HOST__
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls:
+    - hosts:
+      - __HOST__
+      secretName: __CI_PROJECT_SLUG__-auto-tls
+resources:
+  limits:
+    cpu: 500m
+    memory: 500Mi
+  requests:
+    cpu: 200m
+    memory: 200Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# env MUST BE AT THE END FOR .ENV VAR APPEND WITH (echo "$MS_ENV_VARS_PROD") >> values.yaml
+env:
